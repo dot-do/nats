@@ -7,10 +7,8 @@
 
 import type {
   ConsumerConfig,
-  ConsumerInfo,
   ConsumersAPI,
   ConsumersAccessor,
-  Consumer,
   JsMsg,
   PullOptions,
 } from '../../types/jetstream'

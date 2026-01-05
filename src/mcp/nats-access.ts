@@ -10,6 +10,7 @@
 
 import type { StreamConfig, StreamInfo, ConsumerConfig, ConsumerInfo, PubAck, JsMsg, PullOptions } from '../types/jetstream'
 import type { PublishOptions } from '../types/nats'
+import type { Env } from '../types/env'
 
 /**
  * Interface for the NatsPubSub Durable Object stub

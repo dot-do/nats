@@ -9,7 +9,7 @@
  */
 export class NatsError extends Error {
   readonly code: string
-  readonly name = 'NatsError'
+  override readonly name: string = 'NatsError'
 
   constructor(message: string, code: string) {
     super(message)
@@ -22,7 +22,7 @@ export class NatsError extends Error {
  * JetStream-specific error
  */
 export class JetStreamError extends NatsError {
-  readonly name = 'JetStreamError'
+  override readonly name: string = 'JetStreamError'
   readonly stream?: string
   readonly consumer?: string
 
@@ -41,7 +41,7 @@ export class JetStreamError extends NatsError {
  * Timeout error
  */
 export class TimeoutError extends NatsError {
-  readonly name = 'TimeoutError'
+  override readonly name = 'TimeoutError'
   readonly timeout: number
 
   constructor(timeout: number, message?: string) {
@@ -54,7 +54,7 @@ export class TimeoutError extends NatsError {
  * No responders error
  */
 export class NoRespondersError extends NatsError {
-  readonly name = 'NoRespondersError'
+  override readonly name = 'NoRespondersError'
   readonly subject: string
 
   constructor(subject: string) {
@@ -67,7 +67,7 @@ export class NoRespondersError extends NatsError {
  * Connection error
  */
 export class ConnectionError extends NatsError {
-  readonly name = 'ConnectionError'
+  override readonly name = 'ConnectionError'
 
   constructor(message: string) {
     super(message, 'CONNECTION_ERROR')
@@ -78,7 +78,7 @@ export class ConnectionError extends NatsError {
  * Permission error
  */
 export class PermissionError extends NatsError {
-  readonly name = 'PermissionError'
+  override readonly name = 'PermissionError'
   readonly operation?: string
   readonly subject?: string
 
@@ -93,7 +93,7 @@ export class PermissionError extends NatsError {
  * Stream not found error
  */
 export class StreamNotFoundError extends JetStreamError {
-  readonly name = 'StreamNotFoundError'
+  override readonly name = 'StreamNotFoundError'
 
   constructor(stream: string) {
     super(`Stream "${stream}" not found`, 'STREAM_NOT_FOUND', { stream })
@@ -104,7 +104,7 @@ export class StreamNotFoundError extends JetStreamError {
  * Consumer not found error
  */
 export class ConsumerNotFoundError extends JetStreamError {
-  readonly name = 'ConsumerNotFoundError'
+  override readonly name = 'ConsumerNotFoundError'
 
   constructor(stream: string, consumer: string) {
     super(
@@ -119,7 +119,7 @@ export class ConsumerNotFoundError extends JetStreamError {
  * Message not found error
  */
 export class MessageNotFoundError extends JetStreamError {
-  readonly name = 'MessageNotFoundError'
+  override readonly name = 'MessageNotFoundError'
   readonly seq: number
 
   constructor(stream: string, seq: number) {
@@ -134,7 +134,7 @@ export class MessageNotFoundError extends JetStreamError {
  * Stream already exists error
  */
 export class StreamExistsError extends JetStreamError {
-  readonly name = 'StreamExistsError'
+  override readonly name = 'StreamExistsError'
 
   constructor(stream: string) {
     super(`Stream "${stream}" already exists`, 'STREAM_EXISTS', { stream })
@@ -145,7 +145,7 @@ export class StreamExistsError extends JetStreamError {
  * Consumer already exists error
  */
 export class ConsumerExistsError extends JetStreamError {
-  readonly name = 'ConsumerExistsError'
+  override readonly name = 'ConsumerExistsError'
 
   constructor(stream: string, consumer: string) {
     super(
@@ -160,7 +160,7 @@ export class ConsumerExistsError extends JetStreamError {
  * Invalid subject error
  */
 export class InvalidSubjectError extends NatsError {
-  readonly name = 'InvalidSubjectError'
+  override readonly name = 'InvalidSubjectError'
   readonly subject: string
 
   constructor(subject: string) {
@@ -173,7 +173,7 @@ export class InvalidSubjectError extends NatsError {
  * Max payload exceeded error
  */
 export class MaxPayloadError extends NatsError {
-  readonly name = 'MaxPayloadError'
+  override readonly name = 'MaxPayloadError'
   readonly size: number
   readonly maxSize: number
 

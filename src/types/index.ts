@@ -2,6 +2,9 @@
  * Type exports for NatDO
  */
 
+// Environment types
+export { type Env } from './env'
+
 // NATS Core types
 export {
   type ConnectionOptions,

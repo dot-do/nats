@@ -8,6 +8,7 @@
 import { DurableObject } from 'cloudflare:workers'
 import type { ConsumerConfig } from '../types/jetstream'
 import { RPC_ERROR_CODES, createRpcError, createRpcSuccess } from '../types/rpc'
+import type { Env } from '../types/env'
 
 // Consumer registry entry stored in SQLite
 interface ConsumerEntry {
@@ -27,10 +28,10 @@ interface RpcRequest {
   id: number | string
 }
 
-export class NatsCoordinator extends DurableObject {
+export class NatsCoordinator extends DurableObject<Env> {
   private sql: SqlStorage
 
-  constructor(ctx: DurableObjectState, env: unknown) {
+  constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
     this.sql = ctx.storage.sql
 

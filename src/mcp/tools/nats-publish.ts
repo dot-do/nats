@@ -4,7 +4,7 @@
  * Publishes messages to NATS subjects via MCP.
  */
 
-import { createHeaders, type MsgHdrs, type NatsConnection, type PublishOptions } from '../../types/nats'
+import { createHeaders, type MsgHdrs, type PublishOptions } from '../../types/nats'
 
 /**
  * Parameters for nats_publish tool
