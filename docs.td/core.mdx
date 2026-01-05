@@ -1,0 +1,178 @@
+---
+title: Core Messaging
+description: NATS Core publish/subscribe, request/reply, and subject wildcards
+---
+
+NATS Core provides lightweight, fire-and-forget messaging with subject-based routing. Messages are delivered to all matching subscribers in real-time without persistence.
+
+## Publish/Subscribe
+
+The fundamental messaging pattern in NATS is publish/subscribe:
+
+```typescript
+import { StringCodec } from 'nats.do'
+
+const sc = StringCodec()
+
+// Subscribe to a subject
+const sub = nc.subscribe('orders.new')
+
+// Process messages asynchronously
+;(async () => {
+  for await (const msg of sub) {
+    console.log(`Subject: ${msg.subject}`)
+    console.log(`Data: ${sc.decode(msg.data)}`)
+  }
+})()
+
+// Publish messages
+nc.publish('orders.new', sc.encode('Order #123 created'))
+nc.publish('orders.new', sc.encode('Order #124 created'))
+```
+
+## Subject Wildcards
+
+NATS uses a hierarchical subject namespace with dot-separated tokens. Wildcards enable flexible subscription patterns:
+
+### Single Token Wildcard (`*`)
+
+Matches exactly one token in the subject:
+
+```typescript
+// Matches: orders.new, orders.updated, orders.deleted
+// Does NOT match: orders.us.new, orders
+nc.subscribe('orders.*')
+
+// Matches: orders.us.new, orders.eu.new
+// Does NOT match: orders.new, orders.us.east.new
+nc.subscribe('orders.*.new')
+```
+
+### Multi-Token Wildcard (`>`)
+
+Matches one or more tokens at the end of a subject:
+
+```typescript
+// Matches: orders.new, orders.us.new, orders.us.east.new
+// Does NOT match: orders
+nc.subscribe('orders.>')
+
+// Matches: logs.app.info, logs.app.error.critical
+nc.subscribe('logs.>')
+```
+
+### Validation Utilities
+
+```typescript
+import { matchSubject, isValidSubject, isValidWildcard } from 'nats.do/utils'
+
+// Test if a subject matches a pattern
+matchSubject('orders.*', 'orders.new')      // true
+matchSubject('orders.*', 'orders.us.new')   // false
+matchSubject('orders.>', 'orders.us.new')   // true
+
+// Validate subject format
+isValidSubject('orders.new')     // true
+isValidSubject('.orders.new')    // false (starts with dot)
+isValidSubject('orders..new')    // false (empty token)
+
+// Validate wildcard patterns
+isValidWildcard('orders.*')      // true
+isValidWildcard('orders.>')      // true
+isValidWildcard('orders.>.new')  // false (> must be last)
+```
+
+## Request/Reply
+
+NATS supports synchronous request/reply for RPC-style communication:
+
+```typescript
+import { JSONCodec } from 'nats.do'
+
+const jc = JSONCodec<{ id: number }>()
+
+// Service: respond to requests
+const sub = nc.subscribe('api.users.get')
+;(async () => {
+  for await (const msg of sub) {
+    const request = jc.decode(msg.data)
+    const user = await fetchUser(request.id)
+    msg.respond(jc.encode(user))
+  }
+})()
+
+// Client: send request and wait for response
+const response = await nc.request('api.users.get', jc.encode({ id: 123 }))
+const user = jc.decode(response.data)
+```
+
+### Request Options
+
+```typescript
+const response = await nc.request('api.users.get', data, {
+  timeout: 5000,  // Timeout in milliseconds
+  headers: {      // Optional headers
+    'X-Request-ID': 'abc123'
+  }
+})
+```
+
+## Message Structure
+
+Every NATS message contains:
+
+```typescript
+interface Msg {
+  subject: string      // The subject the message was published to
+  data: Uint8Array     // Message payload as bytes
+  reply?: string       // Reply subject for request/reply
+  headers?: MsgHdrs    // Optional headers
+
+  respond(data?: Uint8Array): boolean  // Reply to the message
+}
+```
+
+## Codecs
+
+NATS.do provides codecs for encoding/decoding message payloads:
+
+```typescript
+import { StringCodec, JSONCodec, Empty } from 'nats.do'
+
+// String codec for text messages
+const sc = StringCodec()
+sc.encode('hello')   // Uint8Array
+sc.decode(data)      // string
+
+// JSON codec with type safety
+interface Order {
+  id: number
+  items: string[]
+}
+const jc = JSONCodec<Order>()
+jc.encode({ id: 1, items: ['item1'] })  // Uint8Array
+jc.decode(data)                          // Order
+
+// Empty payload constant
+nc.publish('events.ping', Empty)
+```
+
+## Subscription Management
+
+Control subscriptions programmatically:
+
+```typescript
+const sub = nc.subscribe('orders.*')
+
+// Unsubscribe after receiving N messages
+sub.unsubscribe(10)
+
+// Drain: process pending messages then close
+await sub.drain()
+
+// Check subscription status
+sub.isClosed()
+sub.isDraining()
+sub.getReceived()   // Messages received
+sub.getPending()    // Messages pending processing
+```

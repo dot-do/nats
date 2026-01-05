@@ -1,0 +1,270 @@
+---
+title: API Reference
+description: Complete type definitions and API documentation
+---
+
+## Core Types
+
+### ConnectionOptions
+
+```typescript
+interface ConnectionOptions {
+  servers: string | string[]  // Server URL(s) to connect to
+  name?: string               // Client name for identification
+  token?: string              // Authentication token
+  timeout?: number            // Connection timeout (milliseconds)
+}
+```
+
+### Msg
+
+```typescript
+interface Msg {
+  subject: string             // Subject the message was published to
+  data: Uint8Array           // Message payload as bytes
+  reply?: string             // Reply subject for request/reply
+  headers?: MsgHdrs          // Optional message headers
+
+  respond(data?: Uint8Array): boolean  // Send reply
+}
+```
+
+### Subscription
+
+```typescript
+interface Subscription extends AsyncIterable<Msg> {
+  getSubject(): string       // Get subscribed subject
+  unsubscribe(max?: number): void  // Unsubscribe after N messages
+  drain(): Promise<void>     // Process pending then close
+
+  // Status
+  isClosed(): boolean
+  isDraining(): boolean
+  getReceived(): number      // Total messages received
+  getPending(): number       // Messages awaiting processing
+  getProcessed(): number     // Messages processed
+  getMax(): number | undefined
+}
+```
+
+## JetStream Types
+
+### StreamConfig
+
+```typescript
+interface StreamConfig {
+  name: string
+  description?: string
+  subjects: string[]
+  retention: 'limits' | 'interest' | 'workqueue'
+  storage: 'file' | 'memory'
+  max_consumers: number
+  max_msgs: number
+  max_bytes: number
+  max_age: number               // Nanoseconds
+  max_msgs_per_subject: number
+  max_msg_size?: number
+  discard: 'old' | 'new'
+  num_replicas: number
+  no_ack?: boolean
+  duplicate_window?: number     // Nanoseconds
+  sealed?: boolean
+  deny_delete?: boolean
+  deny_purge?: boolean
+  allow_rollup_hdrs?: boolean
+  metadata?: Record<string, string>
+}
+```
+
+### ConsumerConfig
+
+```typescript
+interface ConsumerConfig {
+  name?: string
+  durable_name?: string
+  description?: string
+
+  // Delivery
+  deliver_policy: 'all' | 'last' | 'new' | 'by_start_sequence' | 'by_start_time' | 'last_per_subject'
+  opt_start_seq?: number
+  opt_start_time?: string       // RFC3339 timestamp
+  filter_subject?: string
+  filter_subjects?: string[]
+  replay_policy: 'instant' | 'original'
+
+  // Acknowledgment
+  ack_policy: 'none' | 'all' | 'explicit'
+  ack_wait?: number             // Nanoseconds
+  max_deliver?: number
+  backoff?: number[]            // Nanoseconds
+
+  // Limits
+  rate_limit_bps?: number
+  max_waiting?: number
+  max_ack_pending?: number
+  max_batch?: number
+  max_expires?: number          // Nanoseconds
+
+  // Cleanup
+  inactive_threshold?: number   // Nanoseconds
+
+  // Options
+  headers_only?: boolean
+  mem_storage?: boolean
+  num_replicas?: number
+  metadata?: Record<string, string>
+}
+```
+
+### PubAck
+
+```typescript
+interface PubAck {
+  stream: string      // Stream name message was stored in
+  seq: number         // Sequence number in stream
+  duplicate: boolean  // True if message was deduplicated
+  domain?: string     // JetStream domain
+}
+```
+
+### JsMsg
+
+```typescript
+interface JsMsg extends Msg {
+  info: JsMsgInfo     // JetStream metadata
+
+  ack(): void                    // Acknowledge message
+  nak(delay?: number): void      // Negative ack with optional delay
+  working(): void                // Reset ack deadline
+  term(): void                   // Terminate (no redelivery)
+  ackAck(): Promise<boolean>     // Ack with confirmation
+}
+
+interface JsMsgInfo {
+  stream: string
+  consumer: string
+  streamSequence: number
+  deliverySequence: number
+  timestampNanos: number
+  pending: number
+  redelivered: boolean
+  redeliveryCount: number
+}
+```
+
+## Codecs
+
+### StringCodec
+
+```typescript
+import { StringCodec } from 'nats.do'
+
+const sc = StringCodec()
+sc.encode('hello')   // Uint8Array
+sc.decode(data)      // string
+```
+
+### JSONCodec
+
+```typescript
+import { JSONCodec } from 'nats.do'
+
+interface MyType {
+  id: number
+  name: string
+}
+
+const jc = JSONCodec<MyType>()
+jc.encode({ id: 1, name: 'test' })  // Uint8Array
+jc.decode(data)                      // MyType
+```
+
+### Empty
+
+```typescript
+import { Empty } from 'nats.do'
+
+// Empty Uint8Array for messages without payload
+nc.publish('events.ping', Empty)
+```
+
+## RPC Protocol
+
+NATS.do uses JSON-RPC 2.0 for communication:
+
+### Request Format
+
+```typescript
+{
+  "jsonrpc": "2.0",
+  "method": "nats.publish",
+  "params": {
+    "subject": "orders.new",
+    "data": "base64encodeddata"
+  },
+  "id": 1
+}
+```
+
+### Response Format
+
+```typescript
+// Success
+{
+  "jsonrpc": "2.0",
+  "result": { "success": true },
+  "id": 1
+}
+
+// Error
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32600,
+    "message": "Invalid Request"
+  },
+  "id": 1
+}
+```
+
+## Utility Functions
+
+### Subject Matching
+
+```typescript
+import { matchSubject, isValidSubject, isValidWildcard } from 'nats.do/utils'
+
+// Check if subject matches pattern
+matchSubject('orders.*', 'orders.new')     // true
+matchSubject('orders.*', 'orders.us.new')  // false
+matchSubject('orders.>', 'orders.us.new')  // true
+
+// Validate subject format
+isValidSubject('orders.new')    // true
+isValidSubject('')              // false
+isValidSubject('.orders')       // false
+isValidSubject('orders..new')   // false
+
+// Validate wildcard patterns
+isValidWildcard('orders.*')     // true
+isValidWildcard('orders.>')     // true
+isValidWildcard('orders.>.new') // false (> must be last)
+```
+
+## Error Handling
+
+NATS.do provides typed errors for common failure cases:
+
+```typescript
+import { NatsError, JetStreamError } from 'nats.do'
+
+try {
+  await js.publish('orders.new', data)
+} catch (error) {
+  if (error instanceof JetStreamError) {
+    console.error(`JetStream error: ${error.code}`)
+  } else if (error instanceof NatsError) {
+    console.error(`NATS error: ${error.message}`)
+  }
+}
+```

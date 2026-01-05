@@ -1,18 +1,59 @@
 ---
-title: Welcome
-description: Documentation for nats.do
+title: NATS.do
+description: NATS/JetStream messaging on Cloudflare Durable Objects
 ---
 
-# Welcome to nats.do
+NATS.do brings the power of [NATS](https://nats.io/) messaging to Cloudflare's edge network. It implements NATS Core pub/sub and [JetStream](https://docs.nats.io/nats-concepts/jetstream) persistence using Durable Objects with SQLite storage, providing a `nats.js`-compatible API accessible via JSON-RPC 2.0 over HTTP, WebSockets, or Cloudflare Workers Service Bindings.
 
-NATS/JetStream on Cloudflare Durable Objects
+## Key Features
 
-## Getting Started
+- **NATS Core Messaging** - Publish/subscribe with subject wildcards (`*`, `>`) and request/reply patterns
+- **JetStream Persistence** - Durable message streams with configurable retention policies (limits, workqueue, interest)
+- **Pull & Push Consumers** - Flexible message consumption with acknowledgment tracking and redelivery
+- **MCP Integration** - Model Context Protocol tools enabling AI agents to interact with messaging
+- **Edge-Native Architecture** - Runs entirely on Cloudflare's global network with SQLite-backed Durable Objects
 
-Add your getting started guide here.
+## Quick Example
 
-## Features
+```typescript
+import { StringCodec, JSONCodec } from 'nats.do'
 
-- Feature 1
-- Feature 2
-- Feature 3
+const sc = StringCodec()
+
+// Basic pub/sub with wildcards
+nc.publish('orders.new', sc.encode('Hello NATS!'))
+
+const sub = nc.subscribe('orders.*')
+for await (const msg of sub) {
+  console.log(`Received: ${sc.decode(msg.data)}`)
+}
+
+// JetStream with persistence
+const jsm = nc.jetstreamManager()
+await jsm.streams.add({
+  name: 'ORDERS',
+  subjects: ['orders.*'],
+  retention: 'workqueue',
+})
+
+const js = nc.jetstream()
+const ack = await js.publish('orders.new', sc.encode('{"id": 456}'))
+console.log(`Published to ${ack.stream} at seq ${ack.seq}`)
+```
+
+## Architecture Overview
+
+NATS.do uses three Durable Object classes to implement the full NATS/JetStream feature set:
+
+| Durable Object | Scope | Responsibility |
+|---------------|-------|----------------|
+| `NatsCoordinator` | Global singleton | Stream registry, consumer discovery, cluster metadata |
+| `NatsPubSub` | Per region | Core NATS pub/sub, WebSocket connections, request/reply |
+| `StreamDO` | Per stream | Message storage, consumer state, ack tracking, retention |
+
+## Next Steps
+
+- [Quick Start](/quickstart) - Install and configure NATS.do
+- [Core Messaging](/core) - Learn about pub/sub patterns
+- [JetStream](/jetstream) - Persistent streams and consumers
+- [API Reference](/api) - Complete type definitions

@@ -1,0 +1,196 @@
+---
+title: Deployment
+description: Deploy NATS.do on Cloudflare Workers
+---
+
+NATS.do runs entirely on Cloudflare's global network using Workers and Durable Objects with SQLite storage.
+
+## Wrangler Configuration
+
+Configure your `wrangler.toml` or `wrangler.jsonc`:
+
+```jsonc
+{
+  "name": "nats.do",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "NATS_COORDINATOR", "class_name": "NatsCoordinator" },
+      { "name": "NATS_PUBSUB", "class_name": "NatsPubSub" },
+      { "name": "STREAM_DO", "class_name": "StreamDO" }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["NatsCoordinator", "NatsPubSub", "StreamDO"]
+    }
+  ]
+}
+```
+
+## Durable Object Classes
+
+Export the Durable Object classes from your worker:
+
+```typescript
+// src/index.ts
+export { NatsCoordinator } from './durable-objects/nats-coordinator'
+export { NatsPubSub } from './durable-objects/nats-pubsub'
+export { StreamDO } from './durable-objects/stream-do'
+
+export default {
+  async fetch(request: Request, env: Env) {
+    // Route to appropriate handler
+  }
+}
+```
+
+## Service Binding Usage
+
+Access NATS.do from another Worker using Service Bindings:
+
+```typescript
+// wrangler.toml in consuming worker
+// [services]
+// [[services]]
+// binding = "NATS"
+// service = "nats.do"
+
+// In your worker
+export default {
+  async fetch(request: Request, env: Env) {
+    const id = env.NATS_COORDINATOR.idFromName('global')
+    const stub = env.NATS_COORDINATOR.get(id)
+
+    const response = await stub.fetch(new Request('http://internal/rpc', {
+      method: 'POST',
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'consumers.list',
+        params: { streamName: 'ORDERS' },
+        id: 1
+      })
+    }))
+
+    return response
+  }
+}
+```
+
+## Environment Bindings
+
+The worker expects these Durable Object bindings:
+
+```typescript
+// src/types/env.ts
+interface Env {
+  NATS_COORDINATOR: DurableObjectNamespace
+  NATS_PUBSUB: DurableObjectNamespace
+  STREAM_DO: DurableObjectNamespace
+}
+```
+
+## HTTP API Access
+
+NATS.do exposes a JSON-RPC 2.0 API over HTTP:
+
+```bash
+# Publish a message
+curl -X POST https://nats.do/rpc \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "nats.publish",
+    "params": {
+      "subject": "orders.new",
+      "data": "eyJpZCI6IDEyM30="
+    },
+    "id": 1
+  }'
+
+# Create a stream
+curl -X POST https://nats.do/rpc \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "jetstream.streams.add",
+    "params": {
+      "name": "ORDERS",
+      "subjects": ["orders.*"],
+      "retention": "workqueue"
+    },
+    "id": 2
+  }'
+```
+
+## WebSocket Connections
+
+For real-time subscriptions, connect via WebSocket:
+
+```typescript
+const ws = new WebSocket('wss://nats.do/ws')
+
+ws.onopen = () => {
+  // Subscribe to a subject
+  ws.send(JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'nats.subscribe',
+    params: { subject: 'orders.*' },
+    id: 1
+  }))
+}
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data)
+  console.log('Received:', msg)
+}
+```
+
+## MCP Endpoint
+
+The MCP endpoint is available at `/mcp` for AI agent integration:
+
+```bash
+curl -X POST https://nats.do/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "method": "tools/call",
+    "params": {
+      "name": "nats_publish",
+      "arguments": {
+        "subject": "orders.new",
+        "data": "{\"id\": 123}"
+      }
+    }
+  }'
+```
+
+## Local Development
+
+```bash
+# Install dependencies
+npm install
+
+# Start local development server
+npm run dev
+
+# The worker will be available at http://localhost:8787
+```
+
+## Deployment Commands
+
+```bash
+# Deploy to Cloudflare
+wrangler deploy
+
+# Deploy to specific environment
+wrangler deploy --env production
+
+# View logs
+wrangler tail
+```

@@ -1,0 +1,248 @@
+---
+title: JetStream
+description: Persistent message streams and consumers with delivery guarantees
+---
+
+JetStream adds persistence, replay, and exactly-once delivery semantics to NATS. Messages are stored in streams and delivered to consumers with acknowledgment tracking.
+
+## Streams
+
+Streams capture messages published to matching subjects and store them for later consumption.
+
+### Creating Streams
+
+```typescript
+const jsm = nc.jetstreamManager()
+
+await jsm.streams.add({
+  name: 'ORDERS',
+  subjects: ['orders.*'],           // Subjects to capture
+  retention: 'workqueue',           // Retention policy
+  storage: 'file',                  // Storage type
+  max_msgs: 10000,                  // Maximum messages
+  max_bytes: 1024 * 1024 * 100,    // Maximum size (100MB)
+  max_age: 24 * 60 * 60 * 1_000_000_000, // Max age (24 hours in ns)
+  discard: 'old',                   // Discard policy when full
+})
+```
+
+### Retention Policies
+
+| Policy | Description | Use Case |
+|--------|-------------|----------|
+| `limits` | Keep messages until limits (age/count/size) are reached | Event sourcing, audit logs |
+| `workqueue` | Delete messages once acknowledged by any consumer | Task queues, job processing |
+| `interest` | Delete messages when no consumers are interested | Temporary topics |
+
+### Stream Operations
+
+```typescript
+// List all streams
+const streams = await jsm.streams.list()
+
+// Get stream info
+const info = await jsm.streams.info('ORDERS')
+console.log(`Messages: ${info.state.messages}`)
+console.log(`Bytes: ${info.state.bytes}`)
+
+// Update stream configuration
+await jsm.streams.update('ORDERS', {
+  max_msgs: 20000,
+})
+
+// Purge all messages
+await jsm.streams.purge('ORDERS')
+
+// Delete stream
+await jsm.streams.delete('ORDERS')
+```
+
+## Publishing to JetStream
+
+JetStream publishing returns acknowledgments confirming message storage:
+
+```typescript
+const js = nc.jetstream()
+const sc = StringCodec()
+
+const ack = await js.publish('orders.new', sc.encode('{"id": 456}'))
+console.log(`Stream: ${ack.stream}`)
+console.log(`Sequence: ${ack.seq}`)
+console.log(`Duplicate: ${ack.duplicate}`)
+```
+
+### Publish Options
+
+```typescript
+const ack = await js.publish('orders.new', data, {
+  msgID: 'order-456',      // For deduplication
+  expect: {
+    streamName: 'ORDERS',  // Verify stream name
+    lastSequence: 100,     // Optimistic concurrency
+  },
+  headers: {
+    'X-Order-Priority': 'high'
+  }
+})
+```
+
+## Consumers
+
+Consumers define how messages are delivered from streams to clients.
+
+### Creating Consumers
+
+```typescript
+// Durable consumer (persists across connections)
+await jsm.consumers.add('ORDERS', {
+  durable_name: 'order-processor',
+  ack_policy: 'explicit',
+  deliver_policy: 'all',
+  filter_subject: 'orders.new',
+})
+
+// Ephemeral consumer (deleted when inactive)
+await jsm.consumers.add('ORDERS', {
+  name: 'temp-processor',
+  ack_policy: 'explicit',
+  deliver_policy: 'new',
+  inactive_threshold: 5 * 60 * 1_000_000_000, // 5 minutes
+})
+```
+
+### Delivery Policies
+
+| Policy | Description |
+|--------|-------------|
+| `all` | Deliver all messages from the beginning |
+| `last` | Deliver only the last message |
+| `new` | Deliver only new messages (after consumer creation) |
+| `by_start_sequence` | Start from a specific sequence number |
+| `by_start_time` | Start from a specific timestamp |
+| `last_per_subject` | Last message for each subject |
+
+### Acknowledgment Policies
+
+| Policy | Description |
+|--------|-------------|
+| `explicit` | Each message must be explicitly acknowledged |
+| `all` | Acknowledging a message acks all prior messages |
+| `none` | No acknowledgment required (at-most-once delivery) |
+
+## Consuming Messages
+
+### Pull Consumers
+
+Fetch messages on demand:
+
+```typescript
+const consumer = await js.consumers.get('ORDERS', 'order-processor')
+
+// Fetch a batch of messages
+const messages = await consumer.fetch({ max_messages: 10 })
+
+for await (const msg of messages) {
+  console.log(`Seq: ${msg.info.streamSequence}`)
+  console.log(`Data: ${sc.decode(msg.data)}`)
+
+  // Acknowledge successful processing
+  msg.ack()
+}
+```
+
+### Message Acknowledgments
+
+```typescript
+for await (const msg of messages) {
+  try {
+    await processOrder(msg.data)
+    msg.ack()       // Success - remove from pending
+  } catch (error) {
+    if (isRetryable(error)) {
+      msg.nak(5000) // Retry after 5 seconds
+    } else {
+      msg.term()    // Terminal failure - don't redeliver
+    }
+  }
+}
+
+// Extend processing time
+msg.working()  // Reset ack deadline
+```
+
+### Acknowledgment Methods
+
+| Method | Description |
+|--------|-------------|
+| `ack()` | Acknowledge successful processing |
+| `nak(delay?)` | Negative ack - redeliver after optional delay |
+| `working()` | Reset ack wait timer (still processing) |
+| `term()` | Terminate - don't redeliver (permanent failure) |
+| `ackAck()` | Acknowledge and wait for server confirmation |
+
+## Consumer Configuration
+
+Full configuration options:
+
+```typescript
+interface ConsumerConfig {
+  name?: string                  // Consumer name
+  durable_name?: string          // Durable name (persists)
+  description?: string
+
+  // Delivery
+  deliver_policy: 'all' | 'last' | 'new' | 'by_start_sequence' | 'by_start_time'
+  opt_start_seq?: number         // For by_start_sequence
+  opt_start_time?: string        // For by_start_time (RFC3339)
+  filter_subject?: string        // Filter to specific subject
+  filter_subjects?: string[]     // Filter to multiple subjects
+
+  // Acknowledgment
+  ack_policy: 'explicit' | 'none' | 'all'
+  ack_wait?: number              // Ack timeout (nanoseconds)
+  max_deliver?: number           // Max redelivery attempts
+  backoff?: number[]             // Redelivery backoff (nanoseconds)
+
+  // Performance
+  max_ack_pending?: number       // Max unacked messages
+  max_waiting?: number           // Max pull requests waiting
+  max_batch?: number             // Max messages per fetch
+  max_expires?: number           // Max pull request duration
+
+  // Cleanup
+  inactive_threshold?: number    // Delete if inactive (nanoseconds)
+}
+```
+
+## Stream Configuration
+
+Full stream configuration options:
+
+```typescript
+interface StreamConfig {
+  name: string
+  description?: string
+  subjects: string[]
+
+  // Retention
+  retention: 'limits' | 'interest' | 'workqueue'
+  max_msgs: number
+  max_bytes: number
+  max_age: number               // Nanoseconds
+  max_msgs_per_subject: number
+  max_msg_size?: number
+  discard: 'old' | 'new'
+
+  // Storage
+  storage: 'file' | 'memory'
+  num_replicas: number
+
+  // Features
+  no_ack?: boolean
+  duplicate_window?: number     // Dedup window (nanoseconds)
+  allow_rollup_hdrs?: boolean
+  deny_delete?: boolean
+  deny_purge?: boolean
+  sealed?: boolean
+}
+```

@@ -1,0 +1,114 @@
+---
+title: Quick Start
+description: Install and get started with NATS.do in minutes
+---
+
+## Installation
+
+```bash
+npm install nats.do
+```
+
+## Basic Pub/Sub
+
+The simplest way to use NATS.do is with the core publish/subscribe pattern:
+
+```typescript
+import { StringCodec, JSONCodec } from 'nats.do'
+
+const sc = StringCodec()
+const jc = JSONCodec()
+
+// Publish a string message
+nc.publish('orders.new', sc.encode('Hello NATS!'))
+
+// Subscribe to messages
+const sub = nc.subscribe('orders.*')
+for await (const msg of sub) {
+  console.log(`Received: ${sc.decode(msg.data)}`)
+}
+
+// Request/Reply pattern
+const response = await nc.request('api.users.get', jc.encode({ id: 123 }))
+console.log(jc.decode(response.data))
+```
+
+## JetStream Streams
+
+For persistent messaging, create a JetStream stream:
+
+```typescript
+const jsm = nc.jetstreamManager()
+
+// Create a stream
+await jsm.streams.add({
+  name: 'ORDERS',
+  subjects: ['orders.*'],
+  retention: 'workqueue',
+  max_msgs: 10000,
+  max_age: 24 * 60 * 60 * 1_000_000_000, // 24 hours in nanoseconds
+})
+
+// Publish with acknowledgment
+const js = nc.jetstream()
+const ack = await js.publish('orders.new', sc.encode('{"id": 456}'))
+console.log(`Published to ${ack.stream} at seq ${ack.seq}`)
+```
+
+## JetStream Consumers
+
+Create consumers to process messages from streams:
+
+```typescript
+// Create a durable consumer
+await jsm.consumers.add('ORDERS', {
+  durable_name: 'order-processor',
+  ack_policy: 'explicit',
+  deliver_policy: 'all',
+})
+
+// Fetch and process messages
+const consumer = await js.consumers.get('ORDERS', 'order-processor')
+const messages = await consumer.fetch({ max_messages: 10 })
+
+for await (const msg of messages) {
+  console.log(`Processing: ${sc.decode(msg.data)}`)
+  msg.ack()
+}
+```
+
+## Subject Wildcards
+
+NATS.do supports standard NATS subject wildcards for flexible subscriptions:
+
+| Wildcard | Description | Example |
+|----------|-------------|---------|
+| `*` | Matches exactly one token | `orders.*` matches `orders.new` but not `orders.us.new` |
+| `>` | Matches one or more tokens (must be last) | `orders.>` matches `orders.new` and `orders.us.new` |
+
+```typescript
+import { matchSubject, isValidSubject, isValidWildcard } from 'nats.do/utils'
+
+matchSubject('orders.*', 'orders.new')     // true
+matchSubject('orders.*', 'orders.us.new')  // false
+matchSubject('orders.>', 'orders.us.new')  // true
+```
+
+## Development
+
+```bash
+# Install dependencies
+npm install
+
+# Run tests
+npm test
+
+# Run tests in watch mode
+npm run test:watch
+
+# Type checking
+npm run typecheck
+
+# Local development
+npm run dev
+```

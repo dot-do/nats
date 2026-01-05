@@ -1,0 +1,257 @@
+---
+title: Architecture
+description: How NATS.do implements NATS/JetStream on Cloudflare Durable Objects
+---
+
+NATS.do implements the full NATS/JetStream feature set using Cloudflare Workers and Durable Objects with SQLite storage. This architecture provides globally distributed messaging with strong consistency guarantees.
+
+## System Overview
+
+```
+                           CLIENT LAYER
+┌─────────────────────────────────────────────────────────────────────────┐
+│  nats.js Compatible Client  │  @nats-io/jetstream Client  │  MCP Tools  │
+│  - connect()                │  - jetstream(nc)             │  - publish  │
+│  - publish()                │  - jetstreamManager(nc)      │  - consume  │
+│  - subscribe()              │  - streams, consumers        │  - manage   │
+│  - request()                │  - publish/consume           │             │
+└─────────────────────────────────────────────────────────────────────────┘
+                                      │
+                    ┌─────────────────┴─────────────────┐
+                    │           RPC TRANSPORT           │
+                    │  - HTTP POST (JSON-RPC 2.0)       │
+                    │  - WebSocket (persistent conn)    │
+                    │  - Service Bindings (Workers)     │
+                    └─────────────────┬─────────────────┘
+                                      │
+                        WORKER ENTRYPOINT
+┌─────────────────────────────────────────────────────────────────────────┐
+│  NatDoEntrypoint extends WorkerEntrypoint                               │
+│  - Routes to appropriate Durable Object                                  │
+│  - Handles JetStream wire API ($JS.API.*)                               │
+│  - MCP endpoint at /mcp                                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+                                      │
+        ┌─────────────────────────────┼─────────────────────────────┐
+        ▼                             ▼                             ▼
+┌───────────────────┐   ┌───────────────────┐   ┌───────────────────────┐
+│  NatsCoordinator  │   │   NatsPubSub      │   │     StreamDO          │
+│  (Single Global)  │   │   (Per Region)    │   │   (Per Stream)        │
+├───────────────────┤   ├───────────────────┤   ├───────────────────────┤
+│ Stream Registry   │   │ Core NATS Pub/Sub │   │ JetStream Messages    │
+│ Consumer Registry │   │ Hibernatable WS   │   │ Consumer State        │
+│ Subject Bindings  │   │ Subject Wildcards │   │ Ack Tracking          │
+│ Cluster Info      │   │ Queue Groups      │   │ Retention/Trimming    │
+└───────────────────┘   │ Request/Reply     │   │ Deduplication         │
+                        └───────────────────┘   └───────────────────────┘
+```
+
+## Durable Objects
+
+### NatsCoordinator (Global Registry)
+
+A single global Durable Object managing cluster-wide metadata.
+
+**Responsibilities:**
+- Stream registry (name to config mapping)
+- Subject to stream bindings
+- Consumer discovery
+- Account limits and stats
+
+**SQLite Schema:**
+
+```sql
+CREATE TABLE streams (
+  name TEXT PRIMARY KEY,
+  config TEXT NOT NULL,          -- JSON: StreamConfig
+  state TEXT NOT NULL,           -- JSON: StreamState
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE stream_subjects (
+  stream_name TEXT NOT NULL REFERENCES streams(name) ON DELETE CASCADE,
+  subject TEXT NOT NULL,
+  PRIMARY KEY (stream_name, subject)
+);
+CREATE INDEX idx_subjects ON stream_subjects(subject);
+
+CREATE TABLE consumers (
+  stream_name TEXT NOT NULL REFERENCES streams(name) ON DELETE CASCADE,
+  consumer_name TEXT NOT NULL,
+  config TEXT NOT NULL,          -- JSON: ConsumerConfig
+  durable INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (stream_name, consumer_name)
+);
+```
+
+### NatsPubSub (Core NATS)
+
+Regional Durable Object handling non-persistent pub/sub with Hibernatable WebSockets.
+
+**Responsibilities:**
+- Subject subscriptions with wildcards
+- Queue group distribution
+- Request/reply coordination
+- Real-time message delivery
+
+**SQLite Schema:**
+
+```sql
+CREATE TABLE subscriptions (
+  id TEXT PRIMARY KEY,
+  subject TEXT NOT NULL,
+  queue_group TEXT,
+  client_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_subs_subject ON subscriptions(subject);
+CREATE INDEX idx_subs_queue ON subscriptions(queue_group) WHERE queue_group IS NOT NULL;
+
+CREATE TABLE pending_requests (
+  inbox TEXT PRIMARY KEY,
+  client_id TEXT NOT NULL,
+  timeout_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_pending_timeout ON pending_requests(timeout_at);
+```
+
+### StreamDO (JetStream Stream)
+
+One Durable Object per stream, handling all messages and consumers for that stream.
+
+**Responsibilities:**
+- Message storage (append-only log)
+- Consumer state management
+- Acknowledgment tracking
+- Retention enforcement
+- Message deduplication
+
+**SQLite Schema:**
+
+```sql
+-- Messages (append-only log)
+CREATE TABLE messages (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  subject TEXT NOT NULL,
+  data BLOB NOT NULL,
+  headers TEXT,                  -- JSON headers
+  timestamp INTEGER NOT NULL,
+  msg_id TEXT                    -- For deduplication
+);
+CREATE INDEX idx_messages_subject ON messages(subject);
+CREATE INDEX idx_messages_timestamp ON messages(timestamp);
+CREATE INDEX idx_messages_msgid ON messages(msg_id) WHERE msg_id IS NOT NULL;
+
+-- Stream state
+CREATE TABLE stream_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  first_seq INTEGER NOT NULL DEFAULT 1,
+  last_seq INTEGER NOT NULL DEFAULT 0,
+  first_ts INTEGER,
+  last_ts INTEGER,
+  bytes INTEGER NOT NULL DEFAULT 0,
+  msgs INTEGER NOT NULL DEFAULT 0,
+  consumer_count INTEGER NOT NULL DEFAULT 0
+);
+
+-- Consumer state
+CREATE TABLE consumer_state (
+  name TEXT PRIMARY KEY,
+  config TEXT NOT NULL,          -- JSON: ConsumerConfig
+  deliver_seq INTEGER NOT NULL DEFAULT 0,
+  ack_floor_seq INTEGER NOT NULL DEFAULT 0,
+  ack_floor_ts INTEGER,
+  num_ack_pending INTEGER NOT NULL DEFAULT 0,
+  num_redelivered INTEGER NOT NULL DEFAULT 0,
+  num_waiting INTEGER NOT NULL DEFAULT 0,
+  num_pending INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  last_active_at INTEGER
+);
+
+-- Pending acknowledgments
+CREATE TABLE pending_acks (
+  consumer_name TEXT NOT NULL REFERENCES consumer_state(name) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  deliver_count INTEGER NOT NULL DEFAULT 1,
+  deliver_time INTEGER NOT NULL,
+  ack_wait_deadline INTEGER NOT NULL,
+  PRIMARY KEY (consumer_name, seq)
+);
+CREATE INDEX idx_pending_deadline ON pending_acks(ack_wait_deadline);
+
+-- Deduplication window
+CREATE TABLE dedup_window (
+  msg_id TEXT PRIMARY KEY,
+  seq INTEGER NOT NULL,
+  timestamp INTEGER NOT NULL
+);
+CREATE INDEX idx_dedup_ts ON dedup_window(timestamp);
+```
+
+## Message Retention
+
+StreamDO enforces retention policies via periodic alarms:
+
+```typescript
+async enforceRetention(): Promise<void> {
+  const config = await this.getConfig()
+  const state = await this.getState()
+  const now = Date.now() * 1_000_000 // nanoseconds
+
+  // Enforce max_age
+  if (config.max_age > 0) {
+    const cutoff = now - config.max_age
+    await this.sql.exec(
+      `DELETE FROM messages WHERE timestamp < ?`,
+      cutoff
+    )
+  }
+
+  // Enforce max_msgs (FIFO)
+  if (config.max_msgs > 0 && state.msgs > config.max_msgs) {
+    const excess = state.msgs - config.max_msgs
+    await this.sql.exec(
+      `DELETE FROM messages WHERE seq IN (
+        SELECT seq FROM messages ORDER BY seq ASC LIMIT ?
+      )`,
+      excess
+    )
+  }
+
+  // Enforce max_bytes
+  if (config.max_bytes > 0 && state.bytes > config.max_bytes) {
+    // Delete oldest messages until under limit
+    while (state.bytes > config.max_bytes) {
+      const oldest = await this.sql.exec(
+        `SELECT seq, length(data) as size FROM messages ORDER BY seq ASC LIMIT 1`
+      ).one()
+      if (!oldest) break
+      await this.sql.exec(`DELETE FROM messages WHERE seq = ?`, oldest.seq)
+      state.bytes -= oldest.size
+    }
+  }
+}
+```
+
+## JetStream Wire API
+
+The JetStream wire API uses `$JS.API.*` subjects. NATS.do maps these to RPC methods:
+
+| Wire API Subject | RPC Method | Handler |
+|-----------------|------------|---------|
+| `$JS.API.INFO` | `info()` | NatsCoordinator |
+| `$JS.API.STREAM.CREATE.*` | `addStream()` | NatsCoordinator -> StreamDO |
+| `$JS.API.STREAM.UPDATE.*` | `updateStream()` | StreamDO |
+| `$JS.API.STREAM.DELETE.*` | `deleteStream()` | NatsCoordinator -> StreamDO |
+| `$JS.API.STREAM.INFO.*` | `getStream()` | StreamDO |
+| `$JS.API.STREAM.LIST` | `streams()` | NatsCoordinator |
+| `$JS.API.STREAM.PURGE.*` | `purgeStream()` | StreamDO |
+| `$JS.API.STREAM.MSG.GET.*` | `getMessage()` | StreamDO |
+| `$JS.API.CONSUMER.CREATE.*` | `addConsumer()` | StreamDO |
+| `$JS.API.CONSUMER.DELETE.*.*` | `deleteConsumer()` | StreamDO |
+| `$JS.API.CONSUMER.INFO.*.*` | `getConsumer()` | StreamDO |
+| `$JS.API.CONSUMER.MSG.NEXT.*.*` | `fetch()` / `next()` | StreamDO |

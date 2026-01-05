@@ -1,0 +1,178 @@
+---
+title: MCP Integration
+description: Model Context Protocol tools for AI agent access to NATS.do
+---
+
+NATS.do exposes MCP (Model Context Protocol) tools that enable AI agents to interact with the messaging system. This allows LLMs to publish messages, manage streams, and consume data programmatically.
+
+## Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `nats_publish` | Publish a message to a subject |
+| `nats_subscribe` | Subscribe to a subject |
+| `nats_request` | Send a request and wait for response |
+| `jetstream_publish` | Publish to JetStream with acknowledgment |
+| `jetstream_stream_create` | Create a new stream |
+| `jetstream_stream_info` | Get stream information |
+| `jetstream_consumer_create` | Create a consumer |
+| `jetstream_consumer_fetch` | Fetch messages from a consumer |
+
+## Tool Definitions
+
+### nats_publish
+
+Publish a message to a NATS subject:
+
+```typescript
+server.tool('nats_publish', {
+  type: 'object',
+  properties: {
+    subject: { type: 'string', description: 'Subject to publish to' },
+    data: { type: 'string', description: 'Message payload' },
+    jetstream: { type: 'boolean', description: 'Use JetStream for persistence' }
+  },
+  required: ['subject', 'data']
+}, async ({ subject, data, jetstream }) => {
+  if (jetstream) {
+    const ack = await natsAccess.jsPublish(subject, data)
+    return { success: true, stream: ack.stream, seq: ack.seq }
+  }
+  await natsAccess.publish(subject, data)
+  return { success: true }
+})
+```
+
+### nats_stream
+
+Manage JetStream streams:
+
+```typescript
+server.tool('nats_stream', {
+  type: 'object',
+  properties: {
+    action: { enum: ['list', 'get', 'create', 'delete', 'purge'] },
+    name: { type: 'string' },
+    subjects: { type: 'array', items: { type: 'string' } },
+    retention: { enum: ['limits', 'workqueue', 'interest'] },
+    maxAge: { type: 'number', description: 'Max age in nanoseconds' },
+    maxMsgs: { type: 'number' },
+    maxBytes: { type: 'number' }
+  },
+  required: ['action']
+}, async (args) => {
+  switch (args.action) {
+    case 'list': return natsAccess.listStreams()
+    case 'get': return natsAccess.getStream(args.name)
+    case 'create': return natsAccess.createStream({
+      name: args.name,
+      subjects: args.subjects,
+      retention: args.retention,
+      max_age: args.maxAge,
+      max_msgs: args.maxMsgs,
+      max_bytes: args.maxBytes
+    })
+    case 'delete': return natsAccess.deleteStream(args.name)
+    case 'purge': return natsAccess.purgeStream(args.name)
+  }
+})
+```
+
+### nats_consumer
+
+Manage and consume from JetStream consumers:
+
+```typescript
+server.tool('nats_consumer', {
+  type: 'object',
+  properties: {
+    action: { enum: ['list', 'get', 'create', 'delete', 'fetch'] },
+    stream: { type: 'string' },
+    name: { type: 'string' },
+    durable: { type: 'string' },
+    deliverPolicy: { enum: ['all', 'last', 'new', 'by_start_sequence', 'by_start_time'] },
+    ackPolicy: { enum: ['explicit', 'none', 'all'] },
+    batch: { type: 'number' }
+  },
+  required: ['action', 'stream']
+}, async (args) => {
+  switch (args.action) {
+    case 'list': return natsAccess.listConsumers(args.stream)
+    case 'get': return natsAccess.getConsumer(args.stream, args.name)
+    case 'create': return natsAccess.createConsumer(args.stream, {
+      name: args.name,
+      durable_name: args.durable,
+      deliver_policy: args.deliverPolicy,
+      ack_policy: args.ackPolicy
+    })
+    case 'delete': return natsAccess.deleteConsumer(args.stream, args.name)
+    case 'fetch': return natsAccess.fetchMessages(args.stream, args.name, args.batch)
+  }
+})
+```
+
+## NatsAccess Interface
+
+The MCP tools use a `NatsAccess` adapter that provides a simplified interface to NATS.do:
+
+```typescript
+interface NatsAccess {
+  // Core NATS
+  publish(subject: string, data: string | Uint8Array): Promise<void>
+  subscribe(subject: string): AsyncIterable<Msg>
+  request(subject: string, data: string | Uint8Array, timeout?: number): Promise<Msg>
+
+  // JetStream Streams
+  listStreams(): Promise<StreamInfo[]>
+  getStream(name: string): Promise<StreamInfo>
+  createStream(config: Partial<StreamConfig>): Promise<StreamInfo>
+  deleteStream(name: string): Promise<boolean>
+  purgeStream(name: string): Promise<PurgeResponse>
+
+  // JetStream Consumers
+  listConsumers(stream: string): Promise<ConsumerInfo[]>
+  getConsumer(stream: string, name: string): Promise<ConsumerInfo>
+  createConsumer(stream: string, config: Partial<ConsumerConfig>): Promise<ConsumerInfo>
+  deleteConsumer(stream: string, name: string): Promise<boolean>
+
+  // JetStream Messages
+  jsPublish(subject: string, data: string | Uint8Array, opts?: JsPublishOpts): Promise<PubAck>
+  getMessage(stream: string, seq: number): Promise<StoredMsg>
+  fetchMessages(stream: string, consumer: string, batch?: number): Promise<JsMsg[]>
+}
+```
+
+## Creating an MCP Server
+
+```typescript
+import { createMcpServer } from 'nats.do/mcp'
+
+export function createMcpServer(config: { natsAccess: NatsAccess }): McpServer {
+  const server = new McpServer()
+
+  // Register all NATS tools
+  // ... tool definitions
+
+  return server
+}
+```
+
+## Example: AI Agent Workflow
+
+An AI agent can use these tools to implement complex messaging workflows:
+
+```
+Agent: I need to set up a message queue for processing orders.
+
+1. Create stream:
+   nats_stream({ action: 'create', name: 'ORDERS', subjects: ['orders.*'], retention: 'workqueue' })
+
+2. Create consumer:
+   nats_consumer({ action: 'create', stream: 'ORDERS', name: 'processor', ackPolicy: 'explicit' })
+
+3. Publish messages:
+   nats_publish({ subject: 'orders.new', data: '{"id": 1}', jetstream: true })
+
+4. Fetch and process:
+   nats_consumer({ action: 'fetch', stream: 'ORDERS', name: 'processor', batch: 10 })
+```
