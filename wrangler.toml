@@ -1,0 +1,15 @@
+name = "natdo"
+main = "src/index.ts"
+compatibility_date = "2024-09-02"
+compatibility_flags = ["nodejs_compat"]
+
+[durable_objects]
+bindings = [
+  { name = "NATS_COORDINATOR", class_name = "NatsCoordinator" },
+  { name = "NATS_PUBSUB", class_name = "NatsPubSub" },
+  { name = "STREAM_DO", class_name = "StreamDO" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["NatsCoordinator", "NatsPubSub", "StreamDO"]
