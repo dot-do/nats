@@ -18,7 +18,21 @@ jobs:
         with:
           node-version: '20'
       - run: npm ci || npm install
-      - run: npx docs.td build
+      - name: Determine base path
+        id: basepath
+        run: |
+          # If CNAME exists, use root path (custom domain)
+          # Otherwise, use repository name as base path for GitHub Pages
+          if [ -f "CNAME" ]; then
+            echo "BASE_PATH=" >> $GITHUB_OUTPUT
+            echo "Using root path (custom domain: $(cat CNAME))"
+          else
+            # Extract repo name from github.repository (format: owner/repo)
+            REPO_NAME="${GITHUB_REPOSITORY#*/}"
+            echo "BASE_PATH=/${REPO_NAME}" >> $GITHUB_OUTPUT
+            echo "Using base path: /${REPO_NAME}"
+          fi
+      - run: npx docs.td build --base-path "${{ steps.basepath.outputs.BASE_PATH }}"
       - name: Flatten output and add CNAME
         run: |
           mv dist/tenants/*/* dist/ 2>/dev/null || true
