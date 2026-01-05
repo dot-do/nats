@@ -8,9 +8,9 @@ export default defineWorkersConfig({
         wrangler: { configPath: './wrangler.toml' },
         miniflare: {
           durableObjects: {
-            NATS_COORDINATOR: 'NatsCoordinator',
-            NATS_PUBSUB: 'NatsPubSub',
-            STREAM_DO: 'StreamDO',
+            NATS_COORDINATOR: { className: 'NatsCoordinator', useSQLite: true },
+            NATS_PUBSUB: { className: 'NatsPubSub', useSQLite: true },
+            STREAM_DO: { className: 'StreamDO', useSQLite: true },
           },
         },
       },
