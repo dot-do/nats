@@ -186,10 +186,18 @@ export class NatsCoordinator extends DurableObject<Env> {
       last_active_at: number | null
     }
 
+    let config: ConsumerConfig
+    try {
+      config = JSON.parse(row.config) as ConsumerConfig
+    } catch (error) {
+      console.error(`Failed to parse config for consumer ${row.name}:`, error)
+      config = {} as ConsumerConfig
+    }
+
     const entry: ConsumerEntry = {
       stream_name: row.stream_name,
       name: row.name,
-      config: JSON.parse(row.config) as ConsumerConfig,
+      config,
       durable: row.durable === 1,
       created_at: row.created_at,
       last_active_at: row.last_active_at,

@@ -1,276 +1,437 @@
-# NATS.do
+# nats.do
 
-NATS/JetStream on Cloudflare Durable Objects
+> Pub/Sub and Streams. Edge-Native. Zero Ops. AI-First.
 
-NATS.do implements [NATS](https://nats.io/) Core messaging and [JetStream](https://docs.nats.io/nats-concepts/jetstream) persistence using Cloudflare Workers and Durable Objects with SQLite storage. It provides a `nats.js`-compatible API accessible via JSON-RPC 2.0 over HTTP, WebSockets, or Cloudflare Workers Service Bindings.
+Synadia charges enterprise rates for NATS clustering. AWS charges egress for SQS. Kafka needs a fleet of ZooKeepers. Every messaging system assumes you want to manage infrastructure.
+
+**nats.do** is NATS Core and JetStream on Cloudflare Durable Objects. Pub/sub in one line. Streams that speak natural language. Zero servers to manage.
+
+## AI-Native API
+
+```typescript
+import { nats } from 'nats.do'           // Full SDK
+import { nats } from 'nats.do/tiny'      // Minimal client
+import { nats } from 'nats.do/stream'    // JetStream only
+```
+
+Natural language for messaging:
+
+```typescript
+import { nats } from 'nats.do'
+
+// Talk to it like a colleague
+await nats`publish order completed to orders.new`
+await nats`broadcast system maintenance starting in 10 minutes`
+await nats`request user profile from api.users.get with id 123`
+
+// Subscribe with plain English
+await nats`listen for orders.* messages`.each(msg =>
+  console.log(msg.data)
+)
+
+// Wildcards just work
+await nats`listen for events.>`.each(msg =>
+  console.log(`${msg.subject}: ${msg.data}`)
+)
+```
+
+## The Problem
+
+Messaging infrastructure is surprisingly expensive and complex:
+
+| What They Charge | The Reality |
+|------------------|-------------|
+| **NATS Synadia** | $1,500/month minimum for managed clusters |
+| **AWS SQS/SNS** | Penny per million, but egress kills you |
+| **Kafka (Confluent)** | $1/hour minimum, scales to $10k/month |
+| **RabbitMQ (Cloud)** | $100/month for tiny clusters |
+| **Redis Pub/Sub** | Fast but ephemeral, no persistence |
+
+### The Ops Tax
+
+Every messaging system requires:
+
+- Cluster management and scaling
+- Partition rebalancing
+- Consumer group coordination
+- Dead letter queue handling
+- Monitoring and alerting
+- Backup and disaster recovery
+
+### The Codec Dance
+
+```typescript
+// This is what they make you write
+import { connect, StringCodec, JSONCodec } from 'nats'
+const nc = await connect({ servers: 'nats://localhost:4222' })
+const sc = StringCodec()
+const jc = JSONCodec()
+nc.publish('orders.new', sc.encode(JSON.stringify({ id: 456 })))
+```
+
+Why are you encoding strings to bytes to send JSON?
+
+### The Configuration Maze
+
+```typescript
+// JetStream stream creation in native NATS
+await jsm.streams.add({
+  name: 'ORDERS',
+  subjects: ['orders.*'],
+  retention: RetentionPolicy.Workqueue,
+  storage: StorageType.File,
+  max_msgs: 10000,
+  max_bytes: 1024 * 1024 * 100,
+  max_age: 24 * 60 * 60 * 1_000_000_000, // nanoseconds, seriously?
+  discard: DiscardPolicy.Old,
+  num_replicas: 3,
+})
+```
+
+You just wanted a queue.
+
+## The Solution
+
+**nats.do** is messaging that speaks human:
+
+```
+Traditional NATS                    nats.do
+-----------------------------------------------------------------
+Install NATS server                 npm install nats.do
+Configure clustering                Nothing to configure
+Set up persistence                  Durable by default
+Manage consumer groups              Automatic
+Handle acknowledgments              Built in
+Monitor partitions                  No partitions
+Scale brokers                       Scales automatically
+```
+
+## One-Click Deploy
+
+```bash
+npx create-dotdo nats
+```
+
+Your own NATS cluster. Running on Cloudflare's global network. Zero infrastructure.
+
+```typescript
+import { Nats } from 'nats.do'
+
+export default Nats({
+  name: 'my-messaging',
+  streams: ['ORDERS', 'EVENTS', 'LOGS'],
+})
+```
 
 ## Features
 
-- **NATS Core**: Publish/subscribe messaging with subject wildcards (`*`, `>`)
-- **JetStream Streams**: Persistent message storage with configurable retention policies
-- **JetStream Consumers**: Pull and push consumers with acknowledgment tracking
-- **MCP Integration**: Model Context Protocol tools for AI agent access
-- **Edge-Native**: Runs entirely on Cloudflare's global network
-
-## Installation
-
-```bash
-npm install nats.do
-```
-
-## Quick Start
-
-### Basic Pub/Sub
+### Publish/Subscribe
 
 ```typescript
-import { StringCodec, JSONCodec } from 'nats.do'
+// Publish is one sentence
+await nats`publish order created to orders.new`
+await nats`broadcast hello to all services`
 
-const sc = StringCodec()
-const jc = JSONCodec()
-
-// Publish a message
-nc.publish('orders.new', sc.encode('Hello NATS!'))
-
-// Subscribe with wildcards
-const sub = nc.subscribe('orders.*')
+// Subscribe reads like English
+const sub = await nats`listen for orders.*`
 for await (const msg of sub) {
-  console.log(`Received: ${sc.decode(msg.data)}`)
+  console.log(`Order: ${msg.data}`)
 }
 
-// Request/Reply pattern
-const response = await nc.request('api.users.get', jc.encode({ id: 123 }))
-console.log(jc.decode(response.data))
+// Or with inline handler
+await nats`listen for orders.>`.each(msg => {
+  console.log(`${msg.subject}: ${msg.data}`)
+})
+```
+
+### Request/Reply
+
+```typescript
+// Request with natural syntax
+const user = await nats`request user from api.users.get with id 123`
+
+// Responders are just as simple
+await nats`respond to api.users.get`.with(async (msg) => {
+  const user = await db.users.find(msg.data.id)
+  return user
+})
+
+// Chain requests naturally
+const enriched = await nats`request user 123`
+  .then(user => nats`request orders for ${user.id}`)
+  .then(orders => ({ user, orders }))
+```
+
+### Subject Wildcards
+
+```typescript
+// * matches one token
+await nats`listen for orders.*`           // orders.new, orders.shipped
+await nats`listen for logs.*.error`       // logs.api.error, logs.web.error
+
+// > matches everything after
+await nats`listen for events.>`           // events.user.created, events.order.shipped.tracking
+await nats`listen for *.>`                // everything from all services
 ```
 
 ### JetStream Streams
 
 ```typescript
-// Create a stream
-const jsm = nc.jetstreamManager()
-await jsm.streams.add({
-  name: 'ORDERS',
-  subjects: ['orders.*'],
-  retention: 'workqueue',
-  max_msgs: 10000,
-  max_age: 24 * 60 * 60 * 1_000_000_000, // 24 hours in nanoseconds
-})
+// Create streams with plain English
+await nats`create stream ORDERS for orders.* with workqueue retention`
+await nats`create stream EVENTS for events.> max 100000 messages`
+await nats`create stream LOGS for logs.> keep 7 days`
+
+// Complex configs still read naturally
+await nats`create stream AUDIT for audit.* max 1GB keep forever`
 
 // Publish with acknowledgment
-const js = nc.jetstream()
-const ack = await js.publish('orders.new', sc.encode('{"id": 456}'))
-console.log(`Published to ${ack.stream} at seq ${ack.seq}`)
+const ack = await nats`publish to ORDERS: order 456 created`
+console.log(`Published at sequence ${ack.seq}`)
 ```
 
 ### JetStream Consumers
 
 ```typescript
-// Create a durable consumer
-await jsm.consumers.add('ORDERS', {
-  durable_name: 'order-processor',
-  ack_policy: 'explicit',
-  deliver_policy: 'all',
-})
+// Create consumers naturally
+await nats`consume ORDERS as order-processor from beginning`
+await nats`consume ORDERS as analytics-reader from now deliver all`
 
 // Fetch messages
-const consumer = await js.consumers.get('ORDERS', 'order-processor')
-const messages = await consumer.fetch({ max_messages: 10 })
-
-for await (const msg of messages) {
-  console.log(`Processing: ${sc.decode(msg.data)}`)
-  msg.ack()
+const messages = await nats`fetch 10 from ORDERS order-processor`
+for (const msg of messages) {
+  await processOrder(msg.data)
+  await msg.ack()
 }
+
+// Or stream continuously
+await nats`stream from ORDERS order-processor`.each(async msg => {
+  await processOrder(msg.data)
+  await msg.ack()
+})
 ```
 
-## API Reference
-
-### Core Types
+### Message Acknowledgment
 
 ```typescript
-// Connection options
-interface ConnectionOptions {
-  servers: string | string[]
-  name?: string
-  token?: string
-  timeout?: number
-}
+// Explicit ack (default)
+await nats`stream from ORDERS`.each(async msg => {
+  try {
+    await process(msg.data)
+    await msg.ack()           // success
+  } catch (err) {
+    await msg.nak()           // retry later
+  }
+})
 
-// Message
-interface Msg {
-  subject: string
-  data: Uint8Array
-  reply?: string
-  headers?: MsgHdrs
-  respond(data?: Uint8Array): boolean
-}
+// Ack in progress for long operations
+await nats`stream from ORDERS`.each(async msg => {
+  await msg.working()         // reset ack timer
+  await longProcess(msg.data)
+  await msg.ack()
+})
 
-// Subscription
-interface Subscription extends AsyncIterable<Msg> {
-  getSubject(): string
-  unsubscribe(max?: number): void
-  drain(): Promise<void>
-}
+// Terminate (don't redeliver)
+await msg.term()              // dead letter
 ```
 
-### JetStream Types
+### Stream Management
 
 ```typescript
-// Stream configuration
-interface StreamConfig {
-  name: string
-  subjects: string[]
-  retention?: 'limits' | 'interest' | 'workqueue'
-  storage?: 'file' | 'memory'
-  max_msgs?: number
-  max_bytes?: number
-  max_age?: number // nanoseconds
-  discard?: 'old' | 'new'
-}
+// List streams
+const streams = await nats`list streams`
 
-// Consumer configuration
-interface ConsumerConfig {
-  name?: string
-  durable_name?: string
-  ack_policy: 'none' | 'all' | 'explicit'
-  deliver_policy?: 'all' | 'last' | 'new' | 'by_start_sequence' | 'by_start_time'
-  filter_subject?: string
-  max_deliver?: number
-  ack_wait?: number // nanoseconds
-}
+// Get stream info
+const info = await nats`info for stream ORDERS`
+console.log(`${info.messages} messages, ${info.bytes} bytes`)
 
-// Publish acknowledgment
-interface PubAck {
-  stream: string
-  seq: number
-  duplicate?: boolean
-}
+// Purge old messages
+await nats`purge stream ORDERS older than 7 days`
+await nats`purge stream LOGS keep last 1000`
+
+// Delete stream
+await nats`delete stream TEMP_LOGS`
 ```
 
-### Codecs
+### Consumer Groups
 
 ```typescript
-import { StringCodec, JSONCodec, Empty } from 'nats.do'
+// Multiple workers share the load
+await nats`consume ORDERS as workers from beginning shared`
 
-const sc = StringCodec()
-sc.encode('hello')  // Uint8Array
-sc.decode(data)     // string
-
-const jc = JSONCodec<MyType>()
-jc.encode({ key: 'value' })  // Uint8Array
-jc.decode(data)              // MyType
-
-Empty  // Empty Uint8Array for messages without payload
+// Each message delivered to one worker
+// Scale horizontally by adding more consumers with same name
+// Automatic rebalancing when workers join/leave
 ```
 
-### Subject Wildcards
+## Promise Pipelining
 
-NATS.do supports NATS subject wildcards for subscriptions:
-
-- `*` matches exactly one token: `orders.*` matches `orders.new` but not `orders.us.new`
-- `>` matches one or more tokens (must be last): `orders.>` matches `orders.new` and `orders.us.new`
+Chain operations without waiting:
 
 ```typescript
-import { matchSubject, isValidSubject, isValidWildcard } from 'nats.do/utils'
+// Publish to multiple subjects in parallel
+await Promise.all([
+  nats`publish user created to events.user.created`,
+  nats`publish audit log to audit.user`,
+  nats`publish notification to notify.welcome`,
+])
 
-matchSubject('orders.*', 'orders.new')     // true
-matchSubject('orders.*', 'orders.us.new')  // false
-matchSubject('orders.>', 'orders.us.new')  // true
+// Or chain with map
+const results = await nats`listen for orders.new`
+  .take(10)
+  .map(order => nats`request inventory check for ${order.data.sku}`)
+  .map(inv => inv.available ? 'confirm' : 'backorder')
 ```
 
 ## Architecture
 
-NATS.do uses three Durable Object classes:
+nats.do uses three Durable Object classes:
 
 | Durable Object | Scope | Responsibility |
-|---------------|-------|----------------|
+|----------------|-------|----------------|
 | `NatsCoordinator` | Global singleton | Stream registry, consumer discovery, cluster metadata |
-| `NatsPubSub` | Per region | Core NATS pub/sub, WebSocket connections, request/reply |
+| `NatsPubSub` | Per region | Core pub/sub, WebSocket connections, request/reply |
 | `StreamDO` | Per stream | Message storage, consumer state, ack tracking, retention |
 
-### RPC Protocol
+### Edge-Native Design
 
-NATS.do uses JSON-RPC 2.0 for communication:
-
-```typescript
-// Request
-{
-  "jsonrpc": "2.0",
-  "method": "nats.publish",
-  "params": { "subject": "orders.new", "data": "base64..." },
-  "id": 1
-}
-
-// Response
-{
-  "jsonrpc": "2.0",
-  "result": { "success": true },
-  "id": 1
-}
 ```
+Message Flow:
+
+Publisher --> Cloudflare Edge --> NatsPubSub DO --> Subscribers (WebSocket)
+                                       |
+                                       v
+                               StreamDO (persistent)
+                                       |
+                                       v
+                               SQLite (storage)
+```
+
+### Storage
+
+- **SQLite** in Durable Objects for message storage
+- **Automatic compaction** based on retention policy
+- **Global replication** through Cloudflare's network
+- **Zero configuration** required
+
+## vs Traditional NATS
+
+| Feature | Traditional NATS | nats.do |
+|---------|-----------------|---------|
+| **Setup** | Install servers, configure cluster | `npm install nats.do` |
+| **Scaling** | Manual broker management | Automatic |
+| **Persistence** | JetStream requires planning | Built in |
+| **Multi-region** | Complex replication | Global by default |
+| **Monitoring** | Prometheus + Grafana stack | Cloudflare dashboard |
+| **Cost** | Servers + ops time | Pay per request |
+| **API** | Codec encoding required | Natural language |
 
 ## MCP Tools
 
-NATS.do exposes MCP (Model Context Protocol) tools for AI agent integration:
+nats.do exposes MCP tools for AI agent integration:
 
 | Tool | Description |
 |------|-------------|
 | `nats_publish` | Publish a message to a subject |
-| `nats_subscribe` | Subscribe to a subject |
-| `nats_request` | Send a request and wait for response |
-| `jetstream_publish` | Publish to JetStream with acknowledgment |
-| `jetstream_stream_create` | Create a new stream |
-| `jetstream_stream_info` | Get stream information |
-| `jetstream_consumer_create` | Create a consumer |
-| `jetstream_consumer_fetch` | Fetch messages from a consumer |
+| `nats_subscribe` | Subscribe to a subject pattern |
+| `nats_request` | Send request and await response |
+| `nats_stream_create` | Create a JetStream stream |
+| `nats_stream_info` | Get stream information |
+| `nats_consumer_create` | Create a stream consumer |
+| `nats_consumer_fetch` | Fetch messages from consumer |
 
-## Cloudflare Workers Deployment
-
-### wrangler.jsonc
-
-```jsonc
-{
-  "name": "nats.do",
-  "main": "src/index.ts",
-  "compatibility_date": "2024-01-01",
-  "compatibility_flags": ["nodejs_compat"],
-
-  "durable_objects": {
-    "bindings": [
-      { "name": "NATS_COORDINATOR", "class_name": "NatsCoordinator" },
-      { "name": "NATS_PUBSUB", "class_name": "NatsPubSub" },
-      { "name": "STREAM_DO", "class_name": "StreamDO" }
-    ]
-  },
-
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["NatsCoordinator", "NatsPubSub", "StreamDO"]
-    }
-  ]
-}
+```typescript
+// AI agents can use messaging naturally
+await agent`publish task completed to workflow.tasks`
+await agent`listen for approvals.>`.each(handleApproval)
 ```
 
-### Service Binding Usage
+## Use Cases
+
+### Event-Driven Architecture
+
+```typescript
+// Services publish events
+await nats`publish user signed up to events.user.signup`
+
+// Other services react
+await nats`listen for events.user.*`.each(async event => {
+  if (event.subject === 'events.user.signup') {
+    await sendWelcomeEmail(event.data)
+  }
+})
+```
+
+### Work Queues
+
+```typescript
+// Create a work queue stream
+await nats`create stream JOBS for jobs.* workqueue`
+
+// Workers pull jobs
+await nats`stream from JOBS worker`.each(async job => {
+  await processJob(job.data)
+  await job.ack()
+})
+
+// Scale workers horizontally
+// Each job delivered to exactly one worker
+```
+
+### Fan-Out Notifications
+
+```typescript
+// Publish once
+await nats`broadcast server maintenance in 5 minutes to alerts.system`
+
+// All subscribers receive
+await nats`listen for alerts.>`  // monitoring service
+await nats`listen for alerts.>`  // slack notifier
+await nats`listen for alerts.>`  // pagerduty integration
+```
+
+### Request/Reply Services
+
+```typescript
+// API service
+await nats`respond to api.users.get`.with(async req => {
+  return await db.users.find(req.id)
+})
+
+// Clients request
+const user = await nats`request from api.users.get with id 123`
+```
+
+## Deployment
+
+### Cloudflare Workers
+
+```bash
+npx create-dotdo nats
+```
+
+### Service Binding
 
 ```typescript
 // In another Worker
 export default {
   async fetch(request: Request, env: Env) {
-    const id = env.NATS_COORDINATOR.idFromName('global')
-    const stub = env.NATS_COORDINATOR.get(id)
-
-    const response = await stub.fetch(new Request('http://internal/rpc', {
-      method: 'POST',
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'consumers.list',
-        params: { streamName: 'ORDERS' },
-        id: 1
-      })
-    }))
-
-    return response
+    const nats = NatsClient(env.NATS)
+    await nats`publish request received to logs.requests`
+    return new Response('OK')
   }
+}
+```
+
+### wrangler.jsonc
+
+```jsonc
+{
+  "name": "my-app",
+  "main": "src/index.ts",
+  "services": [
+    { "binding": "NATS", "service": "nats-do" }
+  ]
 }
 ```
 
@@ -283,16 +444,54 @@ npm install
 # Run tests
 npm test
 
-# Run tests in watch mode
-npm run test:watch
+# Local development
+npm run dev
 
 # Type checking
 npm run typecheck
-
-# Local development
-npm run dev
 ```
+
+## Roadmap
+
+### Core Messaging
+- [x] Pub/Sub with wildcards
+- [x] Request/Reply pattern
+- [x] Subject-based routing
+- [x] WebSocket connections
+- [ ] Queue groups
+- [ ] Headers support
+
+### JetStream
+- [x] Stream creation and management
+- [x] Pull consumers
+- [x] Push consumers
+- [x] Acknowledgment tracking
+- [x] Retention policies
+- [ ] Key-Value store
+- [ ] Object store
+- [ ] Mirror and source streams
+
+### Operations
+- [x] Natural language API
+- [x] MCP tool integration
+- [ ] Stream import/export
+- [ ] Consumer replay
+- [ ] Dead letter queues
+- [ ] Metrics and monitoring
 
 ## License
 
-MIT
+MIT License
+
+---
+
+<p align="center">
+  <strong>Messaging without the infrastructure.</strong>
+  <br />
+  Pub/sub in one line. Streams that scale.
+  <br /><br />
+  <a href="https://nats.do">Website</a> |
+  <a href="https://docs.nats.do">Docs</a> |
+  <a href="https://discord.gg/dotdo">Discord</a> |
+  <a href="https://github.com/dotdo/nats.do">GitHub</a>
+</p>
